@@ -1,24 +1,42 @@
 use rand::prelude::*;
+use csv::Writer;
+use std::error::Error;
+use std::fs::File;
+use std::io::{self, Write};
+
 
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chromosome
 {
-    data:u64,
-    fitness:f64,
+    pub data:u64,
+    pub fitness:f64,
+    pub N:usize,
 }
 
 impl Chromosome
 {
-    pub fn new()-> Self
+    pub fn new(N:usize)-> Self
     {
-        Chromosome {data:random(), fitness:0.0 }
+        let mut rng = rand::thread_rng();
+        let random_number = rng.gen_range(0..1023);
+        Chromosome {data:random_number, fitness:0.0 , N:N}
     }
 
-    fn calculate_fitness(&mut self) -> f64
+    fn calculate_fitness(&mut self, data_sum:u64) -> f64
     {
-    //pass for now
-        1 as f64 /(self.data as f64)
+        if let Some(diff) = data_sum.checked_sub(self.data){
+        
+            let fitness = ((20000 as i128 -  self.data as i128) as f64 - 0.52*diff as f64)*self.data as f64;
+            if fitness < 0.0{
+                return 0.0;
+            }else{
+                return fitness;
+            }
+        
+        }else{
+            return 0.0;
+        }
     }
 }
 
@@ -33,13 +51,21 @@ pub struct Run
     period:u32,
     population:Vec<Chromosome>,
     total_fitness:f64,
+    data_sum:u64,
 }
 
 impl Run{
     pub fn new(Pcross:f32, Pmut:f32, L:u8, n:usize, z:u8)-> Self
     {
-        let population:Vec<Chromosome> = (0..n).map(|_| Chromosome::new()).collect();
-        Run{Pcross:Pcross, Pmut:Pmut, L:L, n:n, z:z, period:0, population:population, total_fitness:0.0}
+        let population:Vec<Chromosome> = (0..n).map(|_| Chromosome::new(n)).collect();
+        Run{Pcross:Pcross, Pmut:Pmut, L:L, n:n, z:z, period:0, population:population, total_fitness:0.0, data_sum:0}
+    }
+
+    fn calculate_data_sum(&mut self)
+    {
+        self.data_sum = self.population.iter()
+        .map(|x| x.data as u64)
+        .sum::<u64>();
     }
 
     fn calculate_iteration_fitness(&mut self)->()
@@ -47,7 +73,7 @@ impl Run{
         for ind in &mut self.population
         {
             let ind_fitness_old = ind.fitness;
-            ind.fitness = ind.calculate_fitness();
+            ind.fitness = ind.calculate_fitness(self.data_sum);
             self.total_fitness += ind.fitness - ind_fitness_old;
         }
     }
@@ -153,22 +179,54 @@ impl Run{
         }
     }
 
-    fn run(&mut self, iterations:u32)->Vec<Chromosome>
+    pub fn run(&mut self, iterations:u32)->(Vec<Chromosome>, Vec<(u64,f64)>)
     {
+
+        let mut stats : Vec<(u64,f64)> = Vec::new();
 
         for _ in 0..iterations
         {
+            self.calculate_data_sum();
             self.calculate_iteration_fitness();
+            stats.push(self.iter_stats());
             self.recomb();
             self.cross();
             self.mutate();
         }
 
-        self.population.clone()
+        (self.population.clone(), stats)
+    }
+
+    fn iter_stats(&self)->(u64,f64)
+    {
+        let sum = self.population.iter().map(|chromosome| chromosome.data).sum::<u64>();
+        let mean = sum as f64 /  self.n as f64;
+
+        let variance = self.population.iter()
+            .map(|chromosome| (chromosome.data as f64 - mean).powi(2))
+            .sum::<f64>() / self.n as f64;
+
+        (sum, variance)
     }
 
 }
 
+pub fn save_iter_to_csv(data: &Vec<(u64, f64)>, file_name: &str) -> Result<(), Box<dyn Error>> {
+    let file = File::create(file_name)?;
+    let mut writer = csv::Writer::from_writer(file);
+
+    
+    writer.write_record(&["ind_out", "var"])?;
+
+    
+    for iter in data {
+        writer.write_record(&[iter.0.to_string(), iter.1.to_string()])?;
+    }
+
+
+    writer.flush()?;
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -176,7 +234,7 @@ mod tests {
 
     #[test]
     fn new_chromosome() {
-        let test = Chromosome::new();
+        let test = Chromosome::new(30);
         assert_eq!(test.data.count_ones() + test.data.count_zeros(), 64);
     }
 
@@ -237,13 +295,23 @@ mod tests {
     #[test]
     fn run_test()
     {
-        let mut test_run = Run::new(0.2, 0.5, 64, 128, 16);
+        let mut test_run = Run::new(0.322, 0.00322, 10, 30, 2);
 
-        let old_population = test_run.population.clone();
+        let mut old_population = test_run.population.clone();
 
-        let result = test_run.run(1000);
+        let result = test_run.run(10000).0;
+        old_population.sort_by(|a, b| a.data.cmp(&b.data));
+        let mut sorted_result = result.clone();
+        sorted_result.sort_by(|a, b| a.data.cmp(&b.data));
+        
+        let sum = result.iter().fold(0.0, |a,b| a + b.fitness);
 
-        println!("{:?}", result.iter().max_by(|a, b| a.fitness.partial_cmp(&b.fitness).unwrap()));
+        for (idx, ind) in result.iter().enumerate() {
+            println!("idx: {}",ind.fitness/sum);
+        }
+        let ind_out = result.iter().fold(0, |a,b| a + b.data);
+        println!("industry_output: {:?}, avg_out_per_ind:{:?},  industry_util: {:?}", ind_out, ind_out as f64/test_run.n as f64 ,sum);
+        println!("best ind: {:?}", result.iter().max_by(|a, b| a.fitness.partial_cmp(&b.fitness).unwrap()));
         assert!((result != old_population)&&(result.len() == old_population.len()))
     }
 
